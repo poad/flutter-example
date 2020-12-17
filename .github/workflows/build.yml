@@ -28,4 +28,6 @@ jobs:
           unzip flutter.zip
           mv flutter ${HOME}/.local/share/flutter
           echo "${HOME}/.local/share/flutter/bin" >> $GITHUB_PATH
+      - name: Flutter doctor
+        run: |
           flutter doctor
