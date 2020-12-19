@@ -34,10 +34,10 @@ android {
 
     lintOptions {
         disable 'InvalidPackage'
+        checkReleaseBuilds false
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId "com.example.flutter_app_example"
         minSdkVersion 16
         targetSdkVersion 29
@@ -46,12 +46,32 @@ android {
     }
 
     buildTypes {
+        // signingConfigs {
+        //     config {
+        //         if (project.hasProperty('keyAlias') && project.hasProperty('keyPassword') && project.hasProperty('storeFile') && project.hasProperty('storePassword')) {
+        //             keyAlias ${keyAlias}
+        //             keyPassword ${keyPassword}
+        //             storeFile file(${storeFile})
+        //             storePassword ${storePassword}
+        //         }
+        //     }
+        // }
+
+        // debug {
+        //     signingConfig signingConfigs.config
+        // }
+
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig signingConfigs.debug
+            // signingConfig signingConfigs.config
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    compileOptions {
+        sourceCompatibility "1.8"
+        targetCompatibility "1.8"
+    }
+    buildToolsVersion '30.0.2'
 }
 
 flutter {

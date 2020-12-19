@@ -1,4 +1,4 @@
-name: iOS starter workflow
+name: Flutter build workflow
 
 on:
   push:
@@ -8,8 +8,12 @@ on:
 
 jobs:
   build:
-    name: Build and Test default scheme using any available iPhone simulator
+    name: Build and Test
     runs-on: macos-latest
+    env:
+      ANDROID_SDK_HOME: ${HOME}/Library/Android
+      ANDROID_SDK_ROOT: ${ANDROID_SDK_HOME}/sdk
+      ANDROID_HOME: ${HOME}/.android
 
     steps:
       - name: Checkout
@@ -20,14 +24,121 @@ jobs:
         uses: actions/setup-java@v1
         with:
           java-version: 1.8
-      - name: Set Default Scheme
+      - name: Install Flutter
         run: |
+          CUR=$(pwd)
           TEMP_DIR=$(mktemp -d)
           cd $TEMP_DIR
           curl -sSLo flutter.zip https://storage.googleapis.com/flutter_infra/releases/stable/macos/flutter_macos_1.22.5-stable.zip
           unzip flutter.zip
           mv flutter ${HOME}/.local/share/flutter
           echo "${HOME}/.local/share/flutter/bin" >> $GITHUB_PATH
+          cd ${CUR}
+          rm -rf $TEMP_DIR
+      - name: Install Android SDK toolchain
+        run: |
+          CUR=$(pwd)
+          TEMP_DIR=$(mktemp -d)
+          cd $TEMP_DIR
+          curl -sSLo commandlinetools-mac-6858069_latest.zip https://dl.google.com/android/repository/commandlinetools-mac-6858069_latest.zip
+          unzip commandlinetools-mac-6858069_latest.zip
+          mkdir -p ${ANDROID_SDK_ROOT}
+          mv cmdline-tools ${ANDROID_SDK_ROOT}/
+          mkdir -p ${ANDROID_HOME}
+          echo "" > ${ANDROID_HOME}/repositories.cfg
+
       - name: Flutter doctor
         run: |
           flutter doctor
+
+      - name: Import iOS CodeSign Certificates
+        uses: Apple-Actions/import-codesign-certs@v1
+        id: develop-certificate
+        with:
+          p12-file-base64: ${{ secrets.CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.CERTIFICATES_PASSWORD }}
+
+      - name: Import iOS CodeSign Certificates (for distibution)
+        uses: Apple-Actions/import-codesign-certs@v1
+        with:
+          create-keychain: false
+          keychain-password: ${{ steps.develop-certificate.outputs.keychain-password }}
+          p12-file-base64: ${{ secrets.DISTRIBUTION_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.CERTIFICATES_PASSWORD }}
+
+      - name: Import Android CodeSign Certificates
+        run: |
+          ANDROID_CERTIFICATES_FILE_PATH=$(pwd)/flutter_app_example/android/keystore.p12
+          echo "ANDROID_CERTIFICATES_FILE_PATH=${ANDROID_CERTIFICATES_FILE_PATH}" >> $GITHUB_ENV
+          echo ${{ secrets.ANDROID_CERTIFICATES_FILE_BASE64 }} | base64 -D -o ${ANDROID_CERTIFICATES_FILE_PATH}
+
+      - name: Download Provisioning Profiles
+        uses: apple-actions/download-provisioning-profiles@v1
+        with: 
+          bundle-id: 'com.github.poad.*'
+          profile-type: 'IOS_APP_DEVELOPMENT'
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+
+      - name: Download Provisioning Profiles (for distibution)
+        uses: apple-actions/download-provisioning-profiles@v1
+        with: 
+          bundle-id: 'com.github.poad.*'
+          profile-type: 'IOS_APP_STORE'
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+
+      - name: "#️⃣ Update Build Number"
+        id: buildnumber
+        uses: poad/xcode-build-number-auto-update@v1
+        with:
+          path: ./flutter_app_example/ios/Runner/Info.plist
+          new-number: ${{ github.run_number }}
+
+      - name: Flutter build
+        env:
+          ORG_GRADLE_PROJECT_storeFile: ${{ env.ANDROID_CERTIFICATES_FILE_PATH }}
+          ORG_GRADLE_PROJECT_storePassword: ${{ secrets.ANDROID_CERTIFICATES_PASSWORD }}
+          ORG_GRADLE_PROJECT_keyPassword: ${{ secrets.ANDROID_CERTIFICATES_PASSWORD }}
+          ORG_GRADLE_PROJECT_keyAlias: debug
+        run: |
+          cd flutter_app_example
+          flutter pub get
+          flutter build ios --no-codesign
+          flutter build apk
+
+      - name: iOS app archive and export
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          cd ./flutter_app_example/ios
+          xcodebuild -configuration Debug -allowProvisioningUpdates -scheme "Runner" archive -archivePath archive
+          cat exportOptions.plist.template | sed -e "s/{TEAM_ID}/${TEAM_ID}/" > ./exportOptions.plist
+          xcodebuild -exportArchive -archivePath ./archive.xcarchive -exportPath ./build -exportOptionsPlist ./exportOptions.plist
+
+      - name: Lookup IPA file
+        run: echo "ipa_file_path=$(pwd)/$(ls ./flutter_app_example/ios/build/*.ipa)" >> $GITHUB_ENV
+
+      - name: Upload IPA file to DeployGate
+        env:
+          FILE_PATH: ${{ env.ipa_file_path }}
+        run: |
+          curl -sSL \
+            -H "Authorization: token ${{ secrets.DEPLOYGATE_API_TOKEN }}" \
+            -F "file=file://@${FILE_PATH}" \
+            "https://deploygate.com/api/users/poad/apps"
+
+      - name: Lookup APK file
+        run: echo "apk_file_path=$(pwd)/$(ls ./flutter_app_example/build/app/outputs/apk/release/*.apk)" >> $GITHUB_ENV
+
+      - name: Upload APK file to DeployGate
+        env:
+          FILE_PATH: ${{ env.apk_file_path }}
+        run: |
+          curl -sSL \
+            -H "Authorization: token ${{ secrets.DEPLOYGATE_API_TOKEN }}" \
+            -F "file=file://@${FILE_PATH}" \
+            "https://deploygate.com/api/users/poad/apps"
+
