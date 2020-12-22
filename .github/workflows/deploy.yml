@@ -1,12 +1,12 @@
-name: Flutter build workflow
+name: Flutter deploy workflow
 
 on:
-  pull_request:
-    branches: [ "*" ]
+  push:
+    branches: [ main ]
 
 jobs:
   build:
-    name: Build and Test
+    name: Upload to deploygate
     runs-on: macos-latest
     env:
       ANDROID_SDK_HOME: ${HOME}/Library/Android
@@ -33,7 +33,6 @@ jobs:
           echo "${HOME}/.local/share/flutter/bin" >> $GITHUB_PATH
           cd ${CUR}
           rm -rf $TEMP_DIR
-
       - name: Install Android SDK toolchain
         run: |
           CUR=$(pwd)
@@ -49,6 +48,15 @@ jobs:
       - name: Flutter doctor
         run: |
           flutter doctor
+
+      - name: Homebrew install
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+      - name: jq install
+        run: |
+          brew update
+          brew install jq
 
       - name: Import iOS CodeSign Certificates
         uses: Apple-Actions/import-codesign-certs@v1
@@ -108,8 +116,47 @@ jobs:
           flutter build ios --no-codesign
           flutter build apk
 
-      - name: iOS app build and test
+      - name: iOS app archive and export
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
         run: |
-          cd flutter_app_example
-          flutter pub get
-          flutter test
+          cd ./flutter_app_example/ios
+          cat exportOptions.plist.template | sed -e "s/{TEAM_ID}/${TEAM_ID}/" > ./exportOptions.plist
+          xcodebuild -configuration Debug -allowProvisioningUpdates -scheme "Runner" archive -archivePath archive
+          xcodebuild -exportArchive -archivePath ./archive.xcarchive -exportPath ./build -exportOptionsPlist ./exportOptions.plist
+
+      - name: Lookup IPA file
+        run: echo "ipa_file_path=$(pwd)/$(ls ./flutter_app_example/ios/build/*.ipa)" >> $GITHUB_ENV
+
+      - name: Upload IPA file to DeployGate
+        env:
+          FILE_PATH: ${{ env.ipa_file_path }}
+        run: |
+          RESULT=$(curl -sSL \
+            -H "Authorization: token ${{ secrets.DEPLOYGATE_API_TOKEN }}" \
+            -F "file=@${FILE_PATH}" \
+            "https://deploygate.com/api/users/poad/apps")
+          ERR=$(echo ${RESULT} | jq -c ".error")
+          if [ "${ERR}" = "true"; then
+            echo ${RESULT}
+            exit 1;
+          fi
+
+      - name: Lookup APK file
+        run: echo "apk_file_path=$(ls $(pwd)/flutter_app_example/build/app/outputs/apk/release/*.apk)" >> $GITHUB_ENV
+
+      - name: Upload APK file to DeployGate
+        env:
+          FILE_PATH: ${{ env.apk_file_path }}
+        run: |
+          RESULT=$(curl -sSL \
+            -H "Authorization: token ${{ secrets.DEPLOYGATE_API_TOKEN }}" \
+            -F "file=@${FILE_PATH}" \
+            "https://deploygate.com/api/users/poad/apps")
+          echo ${RESULT}
+          ERR=$(echo ${RESULT} | jq -c ".error")
+          if [ "${ERR}" = "true" ]; then
+            echo ${RESULT}
+            exit 1;
+          fi
+
